@@ -473,12 +473,17 @@ status_t ACodec::allocateBuffersOnPort(OMX_U32 portIndex) {
     CHECK(mBuffers[portIndex].isEmpty());
 
     status_t err;
+
+#ifdef STE_HARDWARE
+	err = allocateOutputBuffersFromNativeWindow();
+#else
     if (mNativeWindow != NULL && portIndex == kPortIndexOutput) {
         if (mStoreMetaDataInOutputBuffers) {
             err = allocateOutputMetaDataBuffers();
         } else {
             err = allocateOutputBuffersFromNativeWindow();
         }
+#endif
     } else {
         OMX_PARAM_PORTDEFINITIONTYPE def;
         InitOMXParams(&def);
