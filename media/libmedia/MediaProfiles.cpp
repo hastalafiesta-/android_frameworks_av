@@ -27,6 +27,7 @@
 #include <media/MediaProfiles.h>
 #include <media/stagefright/foundation/ADebug.h>
 #include <OMX_Video.h>
+#include <OMX_VideoExt.h>
 
 namespace android {
 
@@ -37,7 +38,8 @@ MediaProfiles *MediaProfiles::sInstance = NULL;
 const MediaProfiles::NameToTagMap MediaProfiles::sVideoEncoderNameMap[] = {
     {"h263", VIDEO_ENCODER_H263},
     {"h264", VIDEO_ENCODER_H264},
-    {"m4v",  VIDEO_ENCODER_MPEG_4_SP}
+    {"m4v",  VIDEO_ENCODER_MPEG_4_SP},
+    {"h265", VIDEO_ENCODER_H265}
 };
 
 const MediaProfiles::NameToTagMap MediaProfiles::sAudioEncoderNameMap[] = {
@@ -46,9 +48,7 @@ const MediaProfiles::NameToTagMap MediaProfiles::sAudioEncoderNameMap[] = {
     {"aac",    AUDIO_ENCODER_AAC},
     {"heaac",  AUDIO_ENCODER_HE_AAC},
     {"aaceld", AUDIO_ENCODER_AAC_ELD},
-#ifdef QCOM_HARDWARE
-    {"lpcm",  AUDIO_ENCODER_LPCM}
-#endif
+    {"lpcm",  AUDIO_ENCODER_LPCM},
 };
 
 const MediaProfiles::NameToTagMap MediaProfiles::sFileFormatMap[] = {
@@ -72,15 +72,14 @@ const MediaProfiles::NameToTagMap MediaProfiles::sCamcorderQualityNameMap[] = {
     {"480p", CAMCORDER_QUALITY_480P},
     {"720p", CAMCORDER_QUALITY_720P},
     {"1080p", CAMCORDER_QUALITY_1080P},
+    {"2160p", CAMCORDER_QUALITY_2160P},
     {"qvga", CAMCORDER_QUALITY_QVGA},
-    {"fwvga", CAMCORDER_QUALITY_FWVGA},
-    {"wvga", CAMCORDER_QUALITY_WVGA},
+    {"wqvga",CAMCORDER_QUALITY_WQVGA},
     {"vga", CAMCORDER_QUALITY_VGA},
-    {"wqvga", CAMCORDER_QUALITY_WQVGA},
-#ifdef QCOM_HARDWARE
-    {"4kuhd", CAMCORDER_QUALITY_4kUHD},
-    {"4kdci", CAMCORDER_QUALITY_4kDCI},
-#endif
+    {"wvga", CAMCORDER_QUALITY_WVGA},
+    {"fwvga", CAMCORDER_QUALITY_FWVGA},
+    {"4kdci",CAMCORDER_QUALITY_4kDCI},
+    {"hvga",CAMCORDER_QUALITY_HVGA},
 
     {"timelapselow",  CAMCORDER_QUALITY_TIME_LAPSE_LOW},
     {"timelapsehigh", CAMCORDER_QUALITY_TIME_LAPSE_HIGH},
@@ -89,19 +88,35 @@ const MediaProfiles::NameToTagMap MediaProfiles::sCamcorderQualityNameMap[] = {
     {"timelapse480p", CAMCORDER_QUALITY_TIME_LAPSE_480P},
     {"timelapse720p", CAMCORDER_QUALITY_TIME_LAPSE_720P},
     {"timelapse1080p", CAMCORDER_QUALITY_TIME_LAPSE_1080P},
+    {"timelapse2160p", CAMCORDER_QUALITY_TIME_LAPSE_2160P},
     {"timelapseqvga", CAMCORDER_QUALITY_TIME_LAPSE_QVGA},
-#ifdef QCOM_HARDWARE
+    {"timelapsewqvga", CAMCORDER_QUALITY_TIME_LAPSE_WQVGA},
     {"timelapsevga", CAMCORDER_QUALITY_TIME_LAPSE_VGA},
     {"timelapsewvga", CAMCORDER_QUALITY_TIME_LAPSE_WVGA},
     {"timelapsefwvga", CAMCORDER_QUALITY_TIME_LAPSE_FWVGA},
-    {"timelapsewqvga", CAMCORDER_QUALITY_TIME_LAPSE_WQVGA},
-    {"timelapse4kuhd", CAMCORDER_QUALITY_TIME_LAPSE_4kUHD},
     {"timelapse4kdci", CAMCORDER_QUALITY_TIME_LAPSE_4kDCI},
-#endif
+
+    {"highspeedlow",  CAMCORDER_QUALITY_HIGH_SPEED_LOW},
+    {"highspeedhigh", CAMCORDER_QUALITY_HIGH_SPEED_HIGH},
+    {"highspeed480p", CAMCORDER_QUALITY_HIGH_SPEED_480P},
+    {"highspeed720p", CAMCORDER_QUALITY_HIGH_SPEED_720P},
+    {"highspeed1080p", CAMCORDER_QUALITY_HIGH_SPEED_1080P},
+    {"highspeed2160p", CAMCORDER_QUALITY_HIGH_SPEED_2160P},
+
+    {"hevc720p", CAMCORDER_QUALITY_HEVC720P},
+    {"hevc1080p", CAMCORDER_QUALITY_HEVC1080P},
+    {"hevc4kuhd",CAMCORDER_QUALITY_HEVC4kUHD},
+    {"hevc4kdci",CAMCORDER_QUALITY_HEVC4kDCI},
 };
 
+#if LOG_NDEBUG
+#define UNUSED __unused
+#else
+#define UNUSED
+#endif
+
 /*static*/ void
-MediaProfiles::logVideoCodec(const MediaProfiles::VideoCodec& codec)
+MediaProfiles::logVideoCodec(const MediaProfiles::VideoCodec& codec UNUSED)
 {
     ALOGV("video codec:");
     ALOGV("codec = %d", codec.mCodec);
@@ -112,7 +127,7 @@ MediaProfiles::logVideoCodec(const MediaProfiles::VideoCodec& codec)
 }
 
 /*static*/ void
-MediaProfiles::logAudioCodec(const MediaProfiles::AudioCodec& codec)
+MediaProfiles::logAudioCodec(const MediaProfiles::AudioCodec& codec UNUSED)
 {
     ALOGV("audio codec:");
     ALOGV("codec = %d", codec.mCodec);
@@ -122,7 +137,7 @@ MediaProfiles::logAudioCodec(const MediaProfiles::AudioCodec& codec)
 }
 
 /*static*/ void
-MediaProfiles::logVideoEncoderCap(const MediaProfiles::VideoEncoderCap& cap)
+MediaProfiles::logVideoEncoderCap(const MediaProfiles::VideoEncoderCap& cap UNUSED)
 {
     ALOGV("video encoder cap:");
     ALOGV("codec = %d", cap.mCodec);
@@ -135,7 +150,7 @@ MediaProfiles::logVideoEncoderCap(const MediaProfiles::VideoEncoderCap& cap)
 }
 
 /*static*/ void
-MediaProfiles::logAudioEncoderCap(const MediaProfiles::AudioEncoderCap& cap)
+MediaProfiles::logAudioEncoderCap(const MediaProfiles::AudioEncoderCap& cap UNUSED)
 {
     ALOGV("audio encoder cap:");
     ALOGV("codec = %d", cap.mCodec);
@@ -145,21 +160,21 @@ MediaProfiles::logAudioEncoderCap(const MediaProfiles::AudioEncoderCap& cap)
 }
 
 /*static*/ void
-MediaProfiles::logVideoDecoderCap(const MediaProfiles::VideoDecoderCap& cap)
+MediaProfiles::logVideoDecoderCap(const MediaProfiles::VideoDecoderCap& cap UNUSED)
 {
     ALOGV("video decoder cap:");
     ALOGV("codec = %d", cap.mCodec);
 }
 
 /*static*/ void
-MediaProfiles::logAudioDecoderCap(const MediaProfiles::AudioDecoderCap& cap)
+MediaProfiles::logAudioDecoderCap(const MediaProfiles::AudioDecoderCap& cap UNUSED)
 {
     ALOGV("audio codec cap:");
     ALOGV("codec = %d", cap.mCodec);
 }
 
 /*static*/ void
-MediaProfiles::logVideoEditorCap(const MediaProfiles::VideoEditorCap& cap)
+MediaProfiles::logVideoEditorCap(const MediaProfiles::VideoEditorCap& cap UNUSED)
 {
     ALOGV("videoeditor cap:");
     ALOGV("mMaxInputFrameWidth = %d", cap.mMaxInputFrameWidth);
@@ -261,40 +276,38 @@ MediaProfiles::createVideoDecoderCap(const char **atts)
 /*static*/ MediaProfiles::VideoEncoderCap*
 MediaProfiles::createVideoEncoderCap(const char **atts)
 {
-    int maxHFRFrameWidth = 0;
-    int maxHFRFrameHeight = 0;
-    int maxHFRMode = 0;
-
-    CHECK(!strcmp("name",               atts[0])  &&
-          !strcmp("enabled",            atts[2])  &&
-          !strcmp("minBitRate",         atts[4])  &&
-          !strcmp("maxBitRate",         atts[6])  &&
-          !strcmp("minFrameWidth",      atts[8])  &&
-          !strcmp("maxFrameWidth",      atts[10]) &&
-          !strcmp("minFrameHeight",     atts[12]) &&
-          !strcmp("maxFrameHeight",     atts[14]) &&
-          !strcmp("minFrameRate",       atts[16]) &&
-          !strcmp("maxFrameRate",       atts[18]));
-
-
-    if (atts[20]) {
-        CHECK(!strcmp("maxHFRFrameWidth",   atts[20]) &&
-          !strcmp("maxHFRFrameHeight",  atts[22]) &&
-          !strcmp("maxHFRMode",         atts[24]));
-        maxHFRFrameWidth = atoi(atts[21]);
-        maxHFRFrameHeight = atoi(atts[23]);
-        maxHFRMode = atoi(atts[25]);
-    }
+    CHECK(!strcmp("name",           atts[0])  &&
+          !strcmp("enabled",        atts[2])  &&
+          !strcmp("minBitRate",     atts[4])  &&
+          !strcmp("maxBitRate",     atts[6])  &&
+          !strcmp("minFrameWidth",  atts[8])  &&
+          !strcmp("maxFrameWidth",  atts[10]) &&
+          !strcmp("minFrameHeight", atts[12]) &&
+          !strcmp("maxFrameHeight", atts[14]) &&
+          !strcmp("minFrameRate",   atts[16]) &&
+          !strcmp("maxFrameRate",   atts[18]));
 
     const size_t nMappings = sizeof(sVideoEncoderNameMap)/sizeof(sVideoEncoderNameMap[0]);
     const int codec = findTagForName(sVideoEncoderNameMap, nMappings, atts[1]);
     CHECK(codec != -1);
 
+    int maxHFRWidth = 0, maxHFRHeight = 0, maxHFRMode = 0;
+    // Check if there are enough (start through end) attributes in the
+    // 0-terminated list, to include our additional HFR params. Then check
+    // if each of those match the expected names.
+    if (atts[20] && atts[21] && !strcmp("maxHFRFrameWidth", atts[20]) &&
+            atts[22] && atts[23] && !strcmp("maxHFRFrameHeight", atts[22]) &&
+            atts[24] && atts[25] && !strcmp("maxHFRMode", atts[24])) {
+        maxHFRWidth = atoi(atts[21]);
+        maxHFRHeight = atoi(atts[23]);
+        maxHFRMode = atoi(atts[25]);
+    }
+
     MediaProfiles::VideoEncoderCap *cap =
         new MediaProfiles::VideoEncoderCap(static_cast<video_encoder>(codec),
             atoi(atts[5]), atoi(atts[7]), atoi(atts[9]), atoi(atts[11]), atoi(atts[13]),
-            atoi(atts[15]), atoi(atts[17]), atoi(atts[19]), maxHFRFrameWidth,
-            maxHFRFrameHeight, maxHFRMode);
+            atoi(atts[15]), atoi(atts[17]), atoi(atts[19]),
+            maxHFRWidth, maxHFRHeight, maxHFRMode);
     logVideoEncoderCap(*cap);
     return cap;
 }
@@ -502,8 +515,13 @@ static bool isTimelapseProfile(camcorder_quality quality) {
            quality <= CAMCORDER_QUALITY_TIME_LAPSE_LIST_END;
 }
 
+static bool isHighSpeedProfile(camcorder_quality quality) {
+    return quality >= CAMCORDER_QUALITY_HIGH_SPEED_LIST_START &&
+           quality <= CAMCORDER_QUALITY_HIGH_SPEED_LIST_END;
+}
+
 void MediaProfiles::initRequiredProfileRefs(const Vector<int>& cameraIds) {
-    ALOGV("Number of camera ids: %d", cameraIds.size());
+    ALOGV("Number of camera ids: %zu", cameraIds.size());
     CHECK(cameraIds.size() > 0);
     mRequiredProfileRefs = new RequiredProfiles[cameraIds.size()];
     for (size_t i = 0, n = cameraIds.size(); i < n; ++i) {
@@ -549,14 +567,17 @@ void MediaProfiles::checkAndAddRequiredProfilesIfNecessary() {
         camcorder_quality refQuality;
         VideoCodec *codec = NULL;
 
-        // Check high and low from either camcorder profile or timelapse profile
-        // but not both. Default, check camcorder profile
+        // Check high and low from either camcorder profile, timelapse profile
+        // or high speed profile, but not all of them. Default, check camcorder profile
         size_t j = 0;
         size_t o = 2;
         if (isTimelapseProfile(quality)) {
             // Check timelapse profile instead.
             j = 2;
             o = kNumRequiredProfiles;
+        } else if (isHighSpeedProfile(quality)) {
+            // Skip the check for high speed profile.
+            continue;
         } else {
             // Must be camcorder profile.
             CHECK(isCamcorderProfile(quality));
@@ -630,14 +651,14 @@ void MediaProfiles::checkAndAddRequiredProfilesIfNecessary() {
 
                 int index = getCamcorderProfileIndex(cameraId, profile->mQuality);
                 if (index != -1) {
-                    ALOGV("Profile quality %d for camera %d already exists",
+                    ALOGV("Profile quality %d for camera %zu already exists",
                         profile->mQuality, cameraId);
                     CHECK(index == refIndex);
                     continue;
                 }
 
                 // Insert the new profile
-                ALOGV("Add a profile: quality %d=>%d for camera %d",
+                ALOGV("Add a profile: quality %d=>%d for camera %zu",
                         mCamcorderProfiles[info->mRefProfileIndex]->mQuality,
                         profile->mQuality, cameraId);
 
@@ -836,10 +857,8 @@ MediaProfiles::createDefaultCamcorderProfiles(MediaProfiles *profiles)
 MediaProfiles::createDefaultAudioEncoders(MediaProfiles *profiles)
 {
     profiles->mAudioEncoders.add(createDefaultAmrNBEncoderCap());
-#ifdef QCOM_HARDWARE
     profiles->mAudioEncoders.add(createDefaultAacEncoderCap());
     profiles->mAudioEncoders.add(createDefaultLpcmEncoderCap());
-#endif
 }
 
 /*static*/ void
@@ -873,20 +892,20 @@ MediaProfiles::createDefaultAmrNBEncoderCap()
     return new MediaProfiles::AudioEncoderCap(
         AUDIO_ENCODER_AMR_NB, 5525, 12200, 8000, 8000, 1, 1);
 }
-#ifdef QCOM_HARDWARE
+
 /*static*/ MediaProfiles::AudioEncoderCap*
 MediaProfiles::createDefaultAacEncoderCap()
 {
     return new MediaProfiles::AudioEncoderCap(
         AUDIO_ENCODER_AAC, 64000, 156000, 8000, 48000, 1, 2);
 }
+
 /*static*/ MediaProfiles::AudioEncoderCap*
 MediaProfiles::createDefaultLpcmEncoderCap()
 {
     return new MediaProfiles::AudioEncoderCap(
         AUDIO_ENCODER_LPCM, 768000, 4608000, 48000, 48000, 1, 6);
 }
-#endif
 
 /*static*/ void
 MediaProfiles::createDefaultImageEncodingQualityLevels(MediaProfiles *profiles)
@@ -923,6 +942,9 @@ MediaProfiles::createDefaultExportVideoProfiles(MediaProfiles *profiles)
     profiles->mVideoEditorExportProfiles.add(
         new ExportVideoProfile(VIDEO_ENCODER_H264,
             OMX_VIDEO_AVCProfileBaseline, OMX_VIDEO_AVCLevel13));
+    profiles->mVideoEditorExportProfiles.add(
+        new ExportVideoProfile(VIDEO_ENCODER_H265,
+            OMX_VIDEO_AVCProfileBaseline, OMX_VIDEO_HEVCMainTierLevel1));
 }
 
 /*static*/ MediaProfiles*

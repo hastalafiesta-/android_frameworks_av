@@ -17,7 +17,6 @@
 //#define LOG_NDEBUG 0
 #define LOG_TAG "FLACExtractor"
 #include <utils/Log.h>
-#include <cutils/properties.h>
 
 #include "include/FLACExtractor.h"
 // Vorbis comments
@@ -34,8 +33,11 @@
 #include <media/stagefright/MediaBuffer.h>
 
 #ifdef ENABLE_AV_ENHANCEMENTS
-#include <QCMetaData.h>
+#include "QCMediaDefs.h"
+#include "QCMetaData.h"
 #endif
+
+#include <system/audio.h>
 
 namespace android {
 
@@ -77,6 +79,8 @@ private:
 
 class FLACParser : public RefBase {
 
+friend class FLACSource;
+
 public:
     FLACParser(
         const sp<DataSource> &dataSource,
@@ -104,9 +108,6 @@ public:
     FLAC__uint64 getTotalSamples() const {
         return mStreamInfo.total_samples;
     }
-    void set24BitOutput(bool enabled) {
-        m24BitOutput = enabled;
-    }
 
     // media buffers
     void allocateBuffers();
@@ -123,13 +124,12 @@ public:
 protected:
     virtual ~FLACParser();
 
+
 private:
     sp<DataSource> mDataSource;
     sp<MetaData> mFileMetadata;
     sp<MetaData> mTrackMetadata;
     bool mInitCheck;
-
-    bool m24BitOutput;
 
     // media buffers
     size_t mMaxBufferSize;
@@ -219,55 +219,55 @@ private:
 // with the same parameter list, but discard redundant information.
 
 FLAC__StreamDecoderReadStatus FLACParser::read_callback(
-        const FLAC__StreamDecoder *decoder, FLAC__byte buffer[],
+        const FLAC__StreamDecoder * /* decoder */, FLAC__byte buffer[],
         size_t *bytes, void *client_data)
 {
     return ((FLACParser *) client_data)->readCallback(buffer, bytes);
 }
 
 FLAC__StreamDecoderSeekStatus FLACParser::seek_callback(
-        const FLAC__StreamDecoder *decoder,
+        const FLAC__StreamDecoder * /* decoder */,
         FLAC__uint64 absolute_byte_offset, void *client_data)
 {
     return ((FLACParser *) client_data)->seekCallback(absolute_byte_offset);
 }
 
 FLAC__StreamDecoderTellStatus FLACParser::tell_callback(
-        const FLAC__StreamDecoder *decoder,
+        const FLAC__StreamDecoder * /* decoder */,
         FLAC__uint64 *absolute_byte_offset, void *client_data)
 {
     return ((FLACParser *) client_data)->tellCallback(absolute_byte_offset);
 }
 
 FLAC__StreamDecoderLengthStatus FLACParser::length_callback(
-        const FLAC__StreamDecoder *decoder,
+        const FLAC__StreamDecoder * /* decoder */,
         FLAC__uint64 *stream_length, void *client_data)
 {
     return ((FLACParser *) client_data)->lengthCallback(stream_length);
 }
 
 FLAC__bool FLACParser::eof_callback(
-        const FLAC__StreamDecoder *decoder, void *client_data)
+        const FLAC__StreamDecoder * /* decoder */, void *client_data)
 {
     return ((FLACParser *) client_data)->eofCallback();
 }
 
 FLAC__StreamDecoderWriteStatus FLACParser::write_callback(
-        const FLAC__StreamDecoder *decoder, const FLAC__Frame *frame,
+        const FLAC__StreamDecoder * /* decoder */, const FLAC__Frame *frame,
         const FLAC__int32 * const buffer[], void *client_data)
 {
     return ((FLACParser *) client_data)->writeCallback(frame, buffer);
 }
 
 void FLACParser::metadata_callback(
-        const FLAC__StreamDecoder *decoder,
+        const FLAC__StreamDecoder * /* decoder */,
         const FLAC__StreamMetadata *metadata, void *client_data)
 {
     ((FLACParser *) client_data)->metadataCallback(metadata);
 }
 
 void FLACParser::error_callback(
-        const FLAC__StreamDecoder *decoder,
+        const FLAC__StreamDecoder * /* decoder */,
         FLAC__StreamDecoderErrorStatus status, void *client_data)
 {
     ((FLACParser *) client_data)->errorCallback(status);
@@ -408,22 +408,18 @@ void FLACParser::copyBuffer(short *dst, const int *const *src, unsigned nSamples
             }
             break;
         case 24:
-            if (m24BitOutput) {
-                for (unsigned i = 0; i < nSamples; ++i) {
-                    for (unsigned c = 0; c < nChannels; ++c) {
-                        *dst++ = (short)(src[c][i] & 255);
-                        *dst++ = (short)(src[c][i] >> 8);
-                    }
-                }
-            } else {
-                // truncate to 16 bit
-                for (unsigned i = 0; i < nSamples; ++i) {
-                    for (unsigned c = 0; c < nChannels; ++c) {
-                        *dst++ = src[c][i] >> 8;
-                    }
+        case 32:
+        {
+            int32_t *out = (int32_t *)dst;
+            for (unsigned i = 0; i < nSamples; ++i) {
+                for (unsigned c = 0; c < nChannels; ++c) {
+                    *out++ = src[c][i] << 8;
                 }
             }
             break;
+        }
+        default:
+            TRESPASS();
     }
 }
 
@@ -437,7 +433,6 @@ FLACParser::FLACParser(
       mFileMetadata(fileMetadata),
       mTrackMetadata(trackMetadata),
       mInitCheck(false),
-      m24BitOutput(false),
       mMaxBufferSize(0),
       mGroup(NULL),
       mDecoder(NULL),
@@ -450,7 +445,6 @@ FLACParser::FLACParser(
       mErrorStatus((FLAC__StreamDecoderErrorStatus) -1)
 {
     ALOGV("FLACParser::FLACParser");
-
     memset(&mStreamInfo, 0, sizeof(mStreamInfo));
     memset(&mWriteHeader, 0, sizeof(mWriteHeader));
     mInitCheck = init();
@@ -548,9 +542,7 @@ status_t FLACParser::init()
             // sample rate is non-zero, so division by zero not possible
             mTrackMetadata->setInt64(kKeyDuration,
                     (getTotalSamples() * 1000000LL) / getSampleRate());
-#if defined(ENABLE_AV_ENHANCEMENTS) || defined(ENABLE_OFFLOAD_ENHANCEMENTS)
-            mTrackMetadata->setInt32(kKeySampleBits, getBitsPerSample());
-#endif
+            mTrackMetadata->setInt32(kKeyBitsPerSample, getBitsPerSample());
         }
     } else {
         ALOGE("missing STREAMINFO");
@@ -567,7 +559,8 @@ void FLACParser::allocateBuffers()
     CHECK(mGroup == NULL);
     mGroup = new MediaBufferGroup;
     // allocate enough to hold 24-bits (packed in 32 bits)
-    mMaxBufferSize = getMaxBlockSize() * getChannels() * 4;
+    unsigned int bytesPerSample = getBitsPerSample() > 16 ? 4 : 2;
+    mMaxBufferSize = getMaxBlockSize() * getChannels() * bytesPerSample;
     mGroup->add_buffer(new MediaBuffer(mMaxBufferSize));
 }
 
@@ -576,7 +569,6 @@ void FLACParser::releaseBuffers()
     CHECK(mGroup != NULL);
     delete mGroup;
     mGroup = NULL;
-
 }
 
 MediaBuffer *FLACParser::readBuffer(bool doSeek, FLAC__uint64 sample)
@@ -618,10 +610,8 @@ MediaBuffer *FLACParser::readBuffer(bool doSeek, FLAC__uint64 sample)
     if (err != OK) {
         return NULL;
     }
-    size_t bufferSize = blocksize * getChannels() *
-        (((getBitsPerSample() == 24) && m24BitOutput) ? 4 : 2);
+    size_t bufferSize = blocksize * getChannels() * (getBitsPerSample() > 16 ? 4 : 2);
     CHECK(bufferSize <= mMaxBufferSize);
-
     short *data = (short *) buffer->data();
     buffer->set_range(0, bufferSize);
     // copy PCM from FLAC write buffer to our media buffer, with interleaving
@@ -658,18 +648,12 @@ FLACSource::~FLACSource()
     }
 }
 
-status_t FLACSource::start(MetaData *params)
+status_t FLACSource::start(MetaData * params)
 {
+    CHECK(!mStarted);
+
     ALOGV("FLACSource::start");
 
-    CHECK(!mStarted);
-#if defined(ENABLE_AV_ENHANCEMENTS) || defined(ENABLE_OFFLOAD_ENHANCEMENTS)
-    if (mTrackMetadata != 0) {
-        int32_t bitwidth = 16;
-        mTrackMetadata->findInt32(kKeySampleBits, &bitwidth);
-        mParser->set24BitOutput(bitwidth == 24);
-    }
-#endif
     mParser->allocateBuffers();
     mStarted = true;
 
@@ -683,6 +667,7 @@ status_t FLACSource::stop()
     CHECK(mStarted);
     mParser->releaseBuffers();
     mStarted = false;
+
     return OK;
 }
 
@@ -756,8 +741,7 @@ sp<MediaSource> FLACExtractor::getTrack(size_t index)
 }
 
 sp<MetaData> FLACExtractor::getTrackMetaData(
-        size_t index, uint32_t flags)
-{
+        size_t index, uint32_t /* flags */) {
     if (mInitCheck != OK || index > 0) {
         return NULL;
     }

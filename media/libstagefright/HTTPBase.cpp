@@ -20,17 +20,13 @@
 
 #include "include/HTTPBase.h"
 
-#if CHROMIUM_AVAILABLE
-#include "include/chromium_http_stub.h"
-#endif
-
 #include <media/stagefright/foundation/ADebug.h>
 #include <media/stagefright/foundation/ALooper.h>
 
 #include <cutils/properties.h>
 #include <cutils/qtaguid.h>
 
-#include <ConnectivityManager.h>
+#include <NetdClient.h>
 
 namespace android {
 
@@ -41,53 +37,54 @@ HTTPBase::HTTPBase()
       mPrevBandwidthMeasureTimeUs(0),
       mPrevEstimatedBandWidthKbps(0),
       mBandWidthCollectFreqMs(5000),
-      mUIDValid(false),
-      mUID(0) {
-}
-
-// static
-sp<HTTPBase> HTTPBase::Create(uint32_t flags) {
-#if CHROMIUM_AVAILABLE
-        HTTPBase *dataSource = createChromiumHTTPDataSource(flags);
-        if (dataSource) {
-           return dataSource;
-        }
-#endif
-    {
-        TRESPASS();
-
-        return NULL;
-    }
-}
-
-// static
-status_t HTTPBase::UpdateProxyConfig(
-        const char *host, int32_t port, const char *exclusionList) {
-#if CHROMIUM_AVAILABLE
-    return UpdateChromiumHTTPDataSourceProxyConfig(host, port, exclusionList);
-#else
-    return INVALID_OPERATION;
-#endif
+      mCustomBwEstimate(0) {
 }
 
 void HTTPBase::addBandwidthMeasurement(
         size_t numBytes, int64_t delayUs) {
     Mutex::Autolock autoLock(mLock);
-
+    ALOGV("addBandwidthMeasurement");
     BandwidthEntry entry;
     entry.mDelayUs = delayUs;
     entry.mNumBytes = numBytes;
     mTotalTransferTimeUs += delayUs;
     mTotalTransferBytes += numBytes;
 
-    mBandwidthHistory.push_back(entry);
-    if (++mNumBandwidthHistoryItems > 100) {
-        BandwidthEntry *entry = &*mBandwidthHistory.begin();
-        mTotalTransferTimeUs -= entry->mDelayUs;
-        mTotalTransferBytes -= entry->mNumBytes;
-        mBandwidthHistory.erase(mBandwidthHistory.begin());
-        --mNumBandwidthHistoryItems;
+    if (!mCustomBwEstimate) {
+        mBandwidthHistory.push_back(entry);
+        if (++mNumBandwidthHistoryItems > 100) {
+            BandwidthEntry *entry = &*mBandwidthHistory.begin();
+            mTotalTransferTimeUs -= entry->mDelayUs;
+            mTotalTransferBytes -= entry->mNumBytes;
+            mBandwidthHistory.erase(mBandwidthHistory.begin());
+            --mNumBandwidthHistoryItems;
 
+            int64_t timeNowUs = ALooper::GetNowUs();
+            if (timeNowUs - mPrevBandwidthMeasureTimeUs >=
+                    mBandWidthCollectFreqMs * 1000LL) {
+
+                if (mPrevBandwidthMeasureTimeUs != 0) {
+                    mPrevEstimatedBandWidthKbps =
+                        (mTotalTransferBytes * 8E3 / mTotalTransferTimeUs);
+                }
+                mPrevBandwidthMeasureTimeUs = timeNowUs;
+            }
+        }
+    } else {
+        mNumBandwidthHistoryItems++;
+
+        mBandwidthHistory.push_back(entry);
+
+        if (mBandwidthHistory.size() > 8) {
+            while (mTotalTransferTimeUs > 5000000 && mBandwidthHistory.size() > 8) {
+                ALOGV("erase bandwidth item");
+                BandwidthEntry *entry = &*mBandwidthHistory.begin();
+                mTotalTransferTimeUs -= entry->mDelayUs;
+                mTotalTransferBytes -= entry->mNumBytes;
+                mBandwidthHistory.erase(mBandwidthHistory.begin());
+                --mNumBandwidthHistoryItems;
+            }
+        }
         int64_t timeNowUs = ALooper::GetNowUs();
         if (timeNowUs - mPrevBandwidthMeasureTimeUs >=
                 mBandWidthCollectFreqMs * 1000LL) {
@@ -106,9 +103,22 @@ bool HTTPBase::estimateBandwidth(int32_t *bandwidth_bps) {
     Mutex::Autolock autoLock(mLock);
 
     if (mNumBandwidthHistoryItems < 2) {
+        ALOGV("only 2 items");
         return false;
     }
 
+    if (mCustomBwEstimate) {
+        if (mTotalTransferTimeUs > 5000000) {
+            ALOGV("keep the latest 3 items when the total time is greater than 5s");
+            while (mNumBandwidthHistoryItems >3) {
+                List<BandwidthEntry>::iterator it = mBandwidthHistory.begin();
+                mTotalTransferTimeUs -= it->mDelayUs;
+                mTotalTransferBytes -= it->mNumBytes;
+                it = mBandwidthHistory.erase(it);
+                mNumBandwidthHistoryItems--;
+            }
+        }
+    }
     *bandwidth_bps = ((double)mTotalTransferBytes * 8E6 / mTotalTransferTimeUs);
 
     return true;
@@ -135,19 +145,8 @@ status_t HTTPBase::setBandwidthStatCollectFreq(int32_t freqMs) {
     return OK;
 }
 
-void HTTPBase::setUID(uid_t uid) {
-    mUIDValid = true;
-    mUID = uid;
-}
-
-bool HTTPBase::getUID(uid_t *uid) const {
-    if (!mUIDValid) {
-        return false;
-    }
-
-    *uid = mUID;
-
-    return true;
+void HTTPBase::setCustomBwEstimate(bool flag) {
+   mCustomBwEstimate = flag;
 }
 
 // static
@@ -168,7 +167,7 @@ void HTTPBase::UnRegisterSocketUserTag(int sockfd) {
 
 // static
 void HTTPBase::RegisterSocketUserMark(int sockfd, uid_t uid) {
-    ConnectivityManager::markSocketAsUser(sockfd, uid);
+    setNetworkForUser(uid, sockfd);
 }
 
 // static

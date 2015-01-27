@@ -13,12 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+//#define LOG_NDEBUG 0
+#define LOG_TAG "DataSource"
 
 #include "include/AMRExtractor.h"
-
-#if CHROMIUM_AVAILABLE
-#include "include/chromium_http_stub.h"
-#endif
 
 #include "include/AACExtractor.h"
 #include "include/DRMExtractor.h"
@@ -35,13 +33,17 @@
 #ifdef QCOM_HARDWARE
 #include "include/ExtendedExtractor.h"
 #endif
-
 #include "matroska/MatroskaExtractor.h"
 
+#include <media/IMediaHTTPConnection.h>
+#include <media/IMediaHTTPService.h>
+#include <media/stagefright/foundation/ADebug.h>
 #include <media/stagefright/foundation/AMessage.h>
 #include <media/stagefright/DataSource.h>
+#include <media/stagefright/DataURISource.h>
 #include <media/stagefright/FileSource.h>
 #include <media/stagefright/MediaErrors.h>
+#include <media/stagefright/MediaHTTP.h>
 #include <utils/String8.h>
 
 #include <cutils/properties.h>
@@ -148,7 +150,7 @@ Sniffer::Sniffer() {
 }
 
 bool Sniffer::sniff(
-        DataSource *source,String8 *mimeType, float *confidence, sp<AMessage> *meta) {
+        DataSource *source, String8 *mimeType, float *confidence, sp<AMessage> *meta) {
 
     bool forceExtraSniffers = false;
 
@@ -177,7 +179,7 @@ bool Sniffer::sniff(
     }
 
     /* Only do the deeper sniffers if the results are null or in doubt */
-    if (mimeType->length() == 0 || *confidence < 0.2f || forceExtraSniffers) {
+    if (mimeType->length() == 0 || *confidence <= 0.2f || forceExtraSniffers) {
         for (List<SnifferFunc>::iterator it = mExtraSniffers.begin();
                 it != mExtraSniffers.end(); ++it) {
             String8 newMimeType;
@@ -208,32 +210,6 @@ void Sniffer::registerSniffer_l(SnifferFunc func) {
     mSniffers.push_back(func);
 }
 
-void Sniffer::registerDefaultSniffers() {
-    Mutex::Autolock autoLock(mSnifferMutex);
-
-    registerSniffer_l(SniffMPEG4);
-    registerSniffer_l(SniffMatroska);
-    registerSniffer_l(SniffOgg);
-    registerSniffer_l(SniffWAV);
-    registerSniffer_l(SniffFLAC);
-    registerSniffer_l(SniffAMR);
-    registerSniffer_l(SniffMPEG2TS);
-    registerSniffer_l(SniffMP3);
-    registerSniffer_l(SniffAAC);
-    registerSniffer_l(SniffMPEG2PS);
-    registerSniffer_l(SniffWVM);
-#ifdef ENABLE_AV_ENHANCEMENTS
-    registerSniffer_l(ExtendedExtractor::Sniff);
-#endif
-    registerSnifferPlugin();
-
-    char value[PROPERTY_VALUE_MAX];
-    if (property_get("drm.service.enabled", value, NULL)
-            && (!strcmp(value, "1") || !strcasecmp(value, "true"))) {
-        registerSniffer_l(SniffDRM);
-    }
-}
-
 void Sniffer::registerSnifferPlugin() {
     static void (*getExtractorPlugin)(MediaExtractor::Plugin *) =
             (void (*)(MediaExtractor::Plugin *))loadExtractorPlugin();
@@ -254,9 +230,43 @@ void Sniffer::registerSnifferPlugin() {
     }
 }
 
+void Sniffer::registerDefaultSniffers() {
+    Mutex::Autolock autoLock(mSnifferMutex);
+
+    registerSniffer_l(SniffMPEG4);
+    registerSniffer_l(SniffMatroska);
+    registerSniffer_l(SniffOgg);
+    registerSniffer_l(SniffWAV);
+    registerSniffer_l(SniffFLAC);
+    registerSniffer_l(SniffAMR);
+    registerSniffer_l(SniffMPEG2TS);
+    registerSniffer_l(SniffMP3);
+    registerSniffer_l(SniffAAC);
+    registerSniffer_l(SniffMPEG2PS);
+    registerSniffer_l(SniffWVM);
+#ifdef QCOM_HARDWARE
+    registerSniffer_l(ExtendedExtractor::Sniff);
+#endif
+    registerSnifferPlugin();
+
+    char value[PROPERTY_VALUE_MAX];
+    if (property_get("drm.service.enabled", value, NULL)
+            && (!strcmp(value, "1") || !strcasecmp(value, "true"))) {
+        registerSniffer_l(SniffDRM);
+    }
+}
+
 // static
 sp<DataSource> DataSource::CreateFromURI(
-        const char *uri, const KeyedVector<String8, String8> *headers) {
+        const sp<IMediaHTTPService> &httpService,
+        const char *uri,
+        const KeyedVector<String8, String8> *headers,
+        String8 *contentType,
+        HTTPBase *httpSource) {
+    if (contentType != NULL) {
+        *contentType = "";
+    }
+
     bool isWidevine = !strncasecmp("widevine://", uri, 11);
 
     sp<DataSource> source;
@@ -265,7 +275,19 @@ sp<DataSource> DataSource::CreateFromURI(
     } else if (!strncasecmp("http://", uri, 7)
             || !strncasecmp("https://", uri, 8)
             || isWidevine) {
-        sp<HTTPBase> httpSource = HTTPBase::Create();
+        if (httpService == NULL) {
+            ALOGE("Invalid http service!");
+            return NULL;
+        }
+
+        if (httpSource == NULL) {
+            sp<IMediaHTTPConnection> conn = httpService->makeHTTPConnection();
+            if (conn == NULL) {
+                ALOGE("Failed to make http connection from http service!");
+                return NULL;
+            }
+            httpSource = new MediaHTTP(conn);
+        }
 
         String8 tmp;
         if (isWidevine) {
@@ -275,32 +297,38 @@ sp<DataSource> DataSource::CreateFromURI(
             uri = tmp.string();
         }
 
-        if (httpSource->connect(uri, headers) != OK) {
+        String8 cacheConfig;
+        bool disconnectAtHighwatermark;
+        KeyedVector<String8, String8> nonCacheSpecificHeaders;
+        if (headers != NULL) {
+            nonCacheSpecificHeaders = *headers;
+            NuCachedSource2::RemoveCacheSpecificHeaders(
+                    &nonCacheSpecificHeaders,
+                    &cacheConfig,
+                    &disconnectAtHighwatermark);
+        }
+
+        if (httpSource->connect(uri, &nonCacheSpecificHeaders) != OK) {
+            ALOGE("Failed to connect http source!");
             return NULL;
         }
 
         if (!isWidevine) {
-            String8 cacheConfig;
-            bool disconnectAtHighwatermark;
-            if (headers != NULL) {
-                KeyedVector<String8, String8> copy = *headers;
-                NuCachedSource2::RemoveCacheSpecificHeaders(
-                        &copy, &cacheConfig, &disconnectAtHighwatermark);
+            if (contentType != NULL) {
+                *contentType = httpSource->getMIMEType();
             }
 
             source = new NuCachedSource2(
                     httpSource,
-                    cacheConfig.isEmpty() ? NULL : cacheConfig.string());
+                    cacheConfig.isEmpty() ? NULL : cacheConfig.string(),
+                    disconnectAtHighwatermark);
         } else {
             // We do not want that prefetching, caching, datasource wrapper
             // in the widevine:// case.
             source = httpSource;
         }
-
-# if CHROMIUM_AVAILABLE
     } else if (!strncasecmp("data:", uri, 5)) {
-        source = createDataUriSource(uri);
-#endif
+        source = DataURISource::Create(uri);
     } else {
         // Assume it's a filename.
         source = new FileSource(uri);
@@ -311,6 +339,19 @@ sp<DataSource> DataSource::CreateFromURI(
     }
 
     return source;
+}
+
+sp<DataSource> DataSource::CreateMediaHTTP(const sp<IMediaHTTPService> &httpService) {
+    if (httpService == NULL) {
+        return NULL;
+    }
+
+    sp<IMediaHTTPConnection> conn = httpService->makeHTTPConnection();
+    if (conn == NULL) {
+        return NULL;
+    } else {
+        return new MediaHTTP(conn);
+    }
 }
 
 String8 DataSource::getMIMEType() const {

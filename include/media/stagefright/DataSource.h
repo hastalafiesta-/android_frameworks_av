@@ -31,7 +31,10 @@
 namespace android {
 
 struct AMessage;
+struct AString;
+struct IMediaHTTPService;
 class String8;
+struct HTTPBase;
 class DataSource;
 
 class Sniffer : public RefBase {
@@ -74,14 +77,18 @@ public:
         kStreamedFromLocalHost = 2,
         kIsCachingDataSource   = 4,
         kIsHTTPBasedSource     = 8,
-        kSupportNonBlockingRead = 16,
     };
 
     static sp<DataSource> CreateFromURI(
+            const sp<IMediaHTTPService> &httpService,
             const char *uri,
-            const KeyedVector<String8, String8> *headers = NULL);
+            const KeyedVector<String8, String8> *headers = NULL,
+            String8 *contentType = NULL,
+            HTTPBase *httpSource = NULL);
 
-    DataSource() { mSniffer = new Sniffer(); }
+    static sp<DataSource> CreateMediaHTTP(const sp<IMediaHTTPService> &httpService);
+
+    DataSource() : mSniffer(new Sniffer()) {}
 
     virtual status_t initCheck() const = 0;
 
@@ -135,6 +142,7 @@ protected:
     sp<Sniffer> mSniffer;
 
     static void RegisterSniffer_l(SnifferFunc func);
+    static void RegisterSnifferPlugin();
 
     DataSource(const DataSource &);
     DataSource &operator=(const DataSource &);

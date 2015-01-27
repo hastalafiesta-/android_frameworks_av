@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <inttypes.h>
+
 //#define LOG_NDEBUG 0
 #define LOG_TAG "CameraSource"
 #include <utils/Log.h>
@@ -30,15 +32,13 @@
 #include <gui/Surface.h>
 #include <utils/String8.h>
 #include <cutils/properties.h>
-#ifdef QCOM_HARDWARE
 #include "include/ExtendedUtils.h"
-#endif
 
-#ifdef USE_TI_CUSTOM_DOMX
-#include <OMX_TI_IVCommon.h>
+#if LOG_NDEBUG
+#define UNUSED_UNLESS_VERBOSE(x) (void)(x)
+#else
+#define UNUSED_UNLESS_VERBOSE(x)
 #endif
-
-#include "include/ExtendedUtils.h"
 
 namespace android {
 
@@ -72,12 +72,15 @@ CameraSourceListener::~CameraSourceListener() {
 }
 
 void CameraSourceListener::notify(int32_t msgType, int32_t ext1, int32_t ext2) {
+    UNUSED_UNLESS_VERBOSE(msgType);
+    UNUSED_UNLESS_VERBOSE(ext1);
+    UNUSED_UNLESS_VERBOSE(ext2);
     ALOGV("notify(%d, %d, %d)", msgType, ext1, ext2);
 }
 
 void CameraSourceListener::postData(int32_t msgType, const sp<IMemory> &dataPtr,
-                                    camera_frame_metadata_t *metadata) {
-    ALOGV("postData(%d, ptr:%p, size:%d)",
+                                    camera_frame_metadata_t * /* metadata */) {
+    ALOGV("postData(%d, ptr:%p, size:%zu)",
          msgType, dataPtr->pointer(), dataPtr->size());
 
     sp<CameraSource> source = mSource.promote();
@@ -114,11 +117,7 @@ static int32_t getColorFormat(const char* colorFormat) {
     }
 
     if (!strcmp(colorFormat, CameraParameters::PIXEL_FORMAT_YUV422I)) {
-#if defined(TARGET_OMAP3) && defined(OMAP_ENHANCEMENT)
-        return OMX_COLOR_FormatCbYCrY;
-#else
         return OMX_COLOR_FormatYCbYCr;
-#endif
     }
 
     if (!strcmp(colorFormat, CameraParameters::PIXEL_FORMAT_RGB565)) {
@@ -128,12 +127,6 @@ static int32_t getColorFormat(const char* colorFormat) {
     if (!strcmp(colorFormat, "OMX_TI_COLOR_FormatYUV420PackedSemiPlanar")) {
        return OMX_TI_COLOR_FormatYUV420PackedSemiPlanar;
     }
-
-#ifdef STE_HARDWARE
-    if (!strcmp(colorFormat, CameraParameters::PIXEL_FORMAT_YUV420MB)) {
-       return OMX_STE_COLOR_FormatYUV420PackedSemiPlanarMB;
-    }
-#endif
 
     if (!strcmp(colorFormat, CameraParameters::PIXEL_FORMAT_ANDROID_OPAQUE)) {
         return OMX_COLOR_FormatAndroidOpaque;
@@ -196,12 +189,12 @@ CameraSource::CameraSource(
       mFirstFrameTimeUs(0),
       mNumFramesDropped(0),
       mNumGlitches(0),
+      mGlitchDurationThresholdUs(200000),
+      mCollectStats(false),
       mRecPause(false),
       mPauseAdjTimeUs(0),
       mPauseStartTimeUs(0),
-      mPauseEndTimeUs(0),
-      mGlitchDurationThresholdUs(200000),
-      mCollectStats(false) {
+      mPauseEndTimeUs(0) {
     mVideoSize.width  = -1;
     mVideoSize.height = -1;
 
@@ -583,27 +576,17 @@ status_t CameraSource::initWithCameraAccess(
 
     // XXX: query camera for the stride and slice height
     // when the capability becomes available.
-#ifdef STE_HARDWARE
-    int stride = newCameraParams.getInt(CameraParameters::KEY_RECORD_STRIDE);
-    int sliceHeight = newCameraParams.getInt(CameraParameters::KEY_RECORD_SLICE_HEIGHT);
-#endif
     mMeta = new MetaData;
     mMeta->setCString(kKeyMIMEType,  MEDIA_MIMETYPE_VIDEO_RAW);
     mMeta->setInt32(kKeyColorFormat, mColorFormat);
     mMeta->setInt32(kKeyWidth,       mVideoSize.width);
     mMeta->setInt32(kKeyHeight,      mVideoSize.height);
-#ifdef STE_HARDWARE
-    mMeta->setInt32(kKeyStride,      stride != -1 ? stride : mVideoSize.width);
-    mMeta->setInt32(kKeySliceHeight, sliceHeight != -1 ? sliceHeight : mVideoSize.height);
-#else
     mMeta->setInt32(kKeyStride,      mVideoSize.width);
     mMeta->setInt32(kKeySliceHeight, mVideoSize.height);
-#endif
     mMeta->setInt32(kKeyFrameRate,   mVideoFrameRate);
 
-#ifdef QCOM_HARDWARE
     ExtendedUtils::HFR::setHFRIfEnabled(params, mMeta);
-#endif
+    ExtendedUtils::applyPreRotation(params, mMeta);
 
     return OK;
 }
@@ -619,14 +602,15 @@ CameraSource::~CameraSource() {
     }
 }
 
-void CameraSource::startCameraRecording() {
+status_t CameraSource::startCameraRecording() {
     ALOGV("startCameraRecording");
     // Reset the identity to the current thread because media server owns the
     // camera and recording is started by the applications. The applications
     // will connect to the camera in ICameraRecordingProxy::startRecording.
     int64_t token = IPCThreadState::self()->clearCallingIdentity();
+    status_t err;
     if (mNumInputBuffers > 0) {
-        status_t err = mCamera->sendCommand(
+        err = mCamera->sendCommand(
             CAMERA_CMD_SET_VIDEO_BUFFER_COUNT, mNumInputBuffers, 0);
 
         // This could happen for CameraHAL1 clients; thus the failure is
@@ -637,17 +621,25 @@ void CameraSource::startCameraRecording() {
         }
     }
 
+    err = OK;
     if (mCameraFlags & FLAGS_HOT_CAMERA) {
         mCamera->unlock();
         mCamera.clear();
-        CHECK_EQ((status_t)OK,
-            mCameraRecordingProxy->startRecording(new ProxyListener(this)));
+        if ((err = mCameraRecordingProxy->startRecording(
+                new ProxyListener(this))) != OK) {
+            ALOGE("Failed to start recording, received error: %s (%d)",
+                    strerror(-err), err);
+        }
     } else {
         mCamera->setListener(new CameraSourceListener(this));
         mCamera->startRecording();
-        CHECK(mCamera->recordingEnabled());
+        if (!mCamera->recordingEnabled()) {
+            err = -EINVAL;
+            ALOGE("Failed to start recording");
+        }
     }
     IPCThreadState::self()->restoreCallingIdentity(token);
+    return err;
 }
 
 status_t CameraSource::start(MetaData *meta) {
@@ -659,6 +651,14 @@ status_t CameraSource::start(MetaData *meta) {
             mPauseAdjTimeUs, mPauseEndTimeUs, mPauseStartTimeUs);
         return OK;
     }
+
+    if (mRecorderExtendedStats == NULL && meta != NULL) {
+        RecorderExtendedStats* rStats = NULL;
+        meta->findPointer(ExtendedStats::MEDIA_STATS_FLAG, (void**) &rStats);
+        mRecorderExtendedStats = rStats;
+    }
+
+    RECORDER_STATS(profileStart, STATS_PROFILE_CAMERA_SOURCE_START_LATENCY);
     CHECK(!mStarted);
     if (mInitCheck != OK) {
         ALOGE("CameraSource is not initialized yet");
@@ -690,15 +690,18 @@ status_t CameraSource::start(MetaData *meta) {
         }
     }
 
-    startCameraRecording();
+    status_t err;
+    if ((err = startCameraRecording()) == OK) {
+        mStarted = true;
+    }
 
-    mStarted = true;
-    return OK;
+    return err;
 }
 
 status_t CameraSource::pause() {
     mRecPause = true;
     mPauseStartTimeUs = mLastFrameTimestampUs;
+    RECORDER_STATS(notifyPause, mPauseStartTimeUs);
     ALOGV("pause : mPauseStart %lld us, #Queued Frames : %d",
         mPauseStartTimeUs, mFramesReceived.size());
     return OK;
@@ -716,63 +719,81 @@ void CameraSource::stopCameraRecording() {
 
 void CameraSource::releaseCamera() {
     ALOGV("releaseCamera");
-    if (mCamera != 0) {
-        int64_t token = IPCThreadState::self()->clearCallingIdentity();
-        if ((mCameraFlags & FLAGS_HOT_CAMERA) == 0) {
-            ALOGV("Camera was cold when we started, stopping preview");
-            mCamera->stopPreview();
-            mCamera->disconnect();
-        }
-        mCamera->unlock();
+    sp<Camera> camera;
+    bool coldCamera = false;
+    {
+        Mutex::Autolock autoLock(mLock);
+        // get a local ref and clear ref to mCamera now
+        camera = mCamera;
         mCamera.clear();
-        mCamera = 0;
+        coldCamera = (mCameraFlags & FLAGS_HOT_CAMERA) == 0;
+    }
+
+    if (camera != 0) {
+        int64_t token = IPCThreadState::self()->clearCallingIdentity();
+        if (coldCamera) {
+            ALOGV("Camera was cold when we started, stopping preview");
+            camera->stopPreview();
+            camera->disconnect();
+        }
+        camera->unlock();
         IPCThreadState::self()->restoreCallingIdentity(token);
     }
-    if (mCameraRecordingProxy != 0) {
-        mCameraRecordingProxy->asBinder()->unlinkToDeath(mDeathNotifier);
-        mCameraRecordingProxy.clear();
+
+    {
+        Mutex::Autolock autoLock(mLock);
+        if (mCameraRecordingProxy != 0) {
+            mCameraRecordingProxy->asBinder()->unlinkToDeath(mDeathNotifier);
+            mCameraRecordingProxy.clear();
+        }
+        mCameraFlags = 0;
     }
-    mCameraFlags = 0;
 }
 
 status_t CameraSource::reset() {
     ALOGD("reset: E");
-    Mutex::Autolock autoLock(mLock);
-    mStarted = false;
-    mFrameAvailableCondition.signal();
 
-    int64_t token;
-    bool isTokenValid = false;
-    if (mCamera != 0) {
-        token = IPCThreadState::self()->clearCallingIdentity();
-        isTokenValid = true;
-    }
-    releaseQueuedFrames();
-    while (!mFramesBeingEncoded.empty()) {
-        if (NO_ERROR !=
-            mFrameCompleteCondition.waitRelative(mLock,
-                    mTimeBetweenFrameCaptureUs * 1000LL + CAMERA_SOURCE_TIMEOUT_NS)) {
-            ALOGW("Timed out waiting for outstanding frames being encoded: %d",
-                mFramesBeingEncoded.size());
+    {
+        Mutex::Autolock autoLock(mLock);
+        mStarted = false;
+        mFrameAvailableCondition.signal();
+
+        int64_t token;
+        bool isTokenValid = false;
+        if (mCamera != 0) {
+            token = IPCThreadState::self()->clearCallingIdentity();
+            isTokenValid = true;
         }
+        releaseQueuedFrames();
+        while (!mFramesBeingEncoded.empty()) {
+            if (NO_ERROR !=
+                mFrameCompleteCondition.waitRelative(mLock,
+                        mTimeBetweenFrameCaptureUs * 1000LL + CAMERA_SOURCE_TIMEOUT_NS)) {
+                ALOGW("Timed out waiting for outstanding frames being encoded: %zu",
+                    mFramesBeingEncoded.size());
+            }
+        }
+        stopCameraRecording();
+        if (isTokenValid) {
+            IPCThreadState::self()->restoreCallingIdentity(token);
+        }
+
+        if (mCollectStats) {
+            ALOGI("Frames received/encoded/dropped: %d/%d/%d in %" PRId64 " us",
+                    mNumFramesReceived, mNumFramesEncoded, mNumFramesDropped,
+                    mLastFrameTimestampUs - mFirstFrameTimeUs);
+        }
+        RECORDER_STATS(logRecordingDuration, mLastFrameTimestampUs - mFirstFrameTimeUs);
+
+        if (mNumGlitches > 0) {
+            ALOGW("%d long delays between neighboring video frames", mNumGlitches);
+        }
+
+        CHECK_EQ(mNumFramesReceived, mNumFramesEncoded + mNumFramesDropped);
     }
-    stopCameraRecording();
+
     releaseCamera();
-    if (isTokenValid) {
-        IPCThreadState::self()->restoreCallingIdentity(token);
-    }
 
-    if (mCollectStats) {
-        ALOGI("Frames received/encoded/dropped: %d/%d/%d in %lld us",
-                mNumFramesReceived, mNumFramesEncoded, mNumFramesDropped,
-                mLastFrameTimestampUs - mFirstFrameTimeUs);
-    }
-
-    if (mNumGlitches > 0) {
-        ALOGW("%d long delays between neighboring video frames", mNumGlitches);
-    }
-
-    CHECK_EQ(mNumFramesReceived, mNumFramesEncoded + mNumFramesDropped);
     ALOGD("reset: X");
     return OK;
 }
@@ -795,6 +816,7 @@ void CameraSource::releaseQueuedFrames() {
         releaseRecordingFrame(*it);
         mFramesReceived.erase(it);
         ++mNumFramesDropped;
+        RECORDER_STATS(logFrameDropped);
     }
 }
 
@@ -815,6 +837,7 @@ void CameraSource::signalBufferReturned(MediaBuffer *buffer) {
             releaseOneRecordingFrame((*it));
             mFramesBeingEncoded.erase(it);
             ++mNumFramesEncoded;
+            RECORDER_STATS(logFrameEncoded);
             buffer->setObserver(0);
             buffer->release();
             mFrameCompleteCondition.signal();
@@ -850,7 +873,7 @@ status_t CameraSource::read(
                     ALOGW("camera recording proxy is gone");
                     return ERROR_END_OF_STREAM;
                 }
-                ALOGW("Timed out waiting for incoming camera video frames: %lld us",
+                ALOGW("Timed out waiting for incoming camera video frames: %" PRId64 " us",
                     mLastFrameTimestampUs);
             }
         }
@@ -873,14 +896,10 @@ status_t CameraSource::read(
 
 void CameraSource::dataCallbackTimestamp(int64_t timestampUs,
         int32_t msgType, const sp<IMemory> &data) {
-    ALOGV("dataCallbackTimestamp: timestamp %lld us", timestampUs);
-    if (!mStarted) {
-       ALOGD("Stop recording issued. Return here.");
-       return;
-    }
+    ALOGV("dataCallbackTimestamp: timestamp %" PRId64 " us", timestampUs);
     Mutex::Autolock autoLock(mLock);
     if (!mStarted || (mNumFramesReceived == 0 && timestampUs < mStartTimeUs)) {
-        ALOGV("Drop frame at %lld/%lld us", timestampUs, mStartTimeUs);
+        ALOGV("Drop frame at %" PRId64 "/%" PRId64 " us", timestampUs, mStartTimeUs);
         releaseOneRecordingFrame(data);
         return;
     }
@@ -897,6 +916,7 @@ void CameraSource::dataCallbackTimestamp(int64_t timestampUs,
     }
     timestampUs -= mPauseAdjTimeUs;
     ALOGV("dataCallbackTimestamp: AdjTimestamp %lld us", timestampUs);
+
     if (mNumFramesReceived > 0) {
         CHECK(timestampUs > mLastFrameTimestampUs);
         if (timestampUs - mLastFrameTimestampUs > mGlitchDurationThresholdUs) {
@@ -913,6 +933,8 @@ void CameraSource::dataCallbackTimestamp(int64_t timestampUs,
 
     mLastFrameTimestampUs = timestampUs;
     if (mNumFramesReceived == 0) {
+        RECORDER_STATS(profileStop, STATS_PROFILE_CAMERA_SOURCE_START_LATENCY);
+        RECORDER_STATS(profileStop, STATS_PROFILE_START_LATENCY);
         mFirstFrameTimeUs = timestampUs;
         // Initial delay
         if (mStartTimeUs > 0) {
@@ -931,7 +953,7 @@ void CameraSource::dataCallbackTimestamp(int64_t timestampUs,
     mFramesReceived.push_back(data);
     int64_t timeUs = mStartTimeUs + (timestampUs - mFirstFrameTimeUs);
     mFrameTimes.push_back(timeUs);
-    ALOGV("initial delay: %lld, current time stamp: %lld",
+    ALOGV("initial delay: %" PRId64 ", current time stamp: %" PRId64,
         mStartTimeUs, timeUs);
     mFrameAvailableCondition.signal();
 }

@@ -29,6 +29,7 @@
 
 #include <media/mediaplayer.h>
 #include <media/AudioSystem.h>
+#include <media/AudioTimestamp.h>
 #include <media/Metadata.h>
 
 // Fwd decl to make sure everyone agrees that the scope of struct sockaddr_in is
@@ -107,6 +108,7 @@ public:
 #endif
         virtual float       msecsPerFrame() const = 0;
         virtual status_t    getPosition(uint32_t *position) const = 0;
+        virtual status_t    getTimestamp(AudioTimestamp &ts) const = 0;
         virtual status_t    getFramesWritten(uint32_t *frameswritten) const = 0;
         virtual int         getSessionId() const = 0;
         virtual audio_stream_type_t getAudioStreamType() const = 0;
@@ -151,6 +153,7 @@ public:
     }
 
     virtual status_t    setDataSource(
+            const sp<IMediaHTTPService> &httpService,
             const char *url,
             const KeyedVector<String8, String8> *headers = NULL) = 0;
 
@@ -227,11 +230,11 @@ public:
         return INVALID_OPERATION;
     }
 
-    virtual status_t suspend() { return INVALID_OPERATION; }
-    virtual status_t resume() { return INVALID_OPERATION; }
+    virtual status_t suspend() {
+        return INVALID_OPERATION;
+    }
 
-    virtual status_t updateProxyConfig(
-            const char *host, int32_t port, const char *exclusionList) {
+    virtual status_t resume() {
         return INVALID_OPERATION;
     }
 

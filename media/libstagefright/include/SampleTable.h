@@ -65,8 +65,9 @@ public:
             uint32_t sampleIndex,
             off64_t *offset,
             size_t *size,
-            uint64_t *compositionTime,
-            bool *isSyncSample = NULL);
+            uint32_t *compositionTime,
+            bool *isSyncSample = NULL,
+            uint32_t *sampleDuration = NULL);
 
     enum {
         kFlagBefore,
@@ -114,7 +115,7 @@ private:
 
     struct SampleTimeEntry {
         uint32_t mSampleIndex;
-        uint64_t mCompositionTime;
+        uint32_t mCompositionTime;
     };
     SampleTimeEntry *mSampleTimeEntries;
 

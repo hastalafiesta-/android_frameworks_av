@@ -114,7 +114,9 @@ MidiFile::~MidiFile() {
 }
 
 status_t MidiFile::setDataSource(
-        const char* path, const KeyedVector<String8, String8> *) {
+        const sp<IMediaHTTPService> & /*httpService*/,
+        const char* path,
+        const KeyedVector<String8, String8> *) {
     ALOGV("MidiFile::setDataSource url=%s", path);
     Mutex::Autolock lock(mMutex);
 
@@ -257,6 +259,7 @@ status_t MidiFile::stop()
             ALOGE("EAS_Pause returned error %ld", result);
             return ERROR_EAS_FAILURE;
         }
+        updateState();
     }
     mPaused = false;
     sendEvent(MEDIA_STOPPED);

@@ -16,6 +16,11 @@
 
 //#define LOG_NDEBUG 0
 #define LOG_TAG "OMXClient"
+
+#ifdef __LP64__
+#define OMX_ANDROID_COMPILE_AS_32BIT_ON_64BIT_PLATFORMS
+#endif
+
 #include <utils/Log.h>
 
 #include <binder/IServiceManager.h>
@@ -25,11 +30,6 @@
 #include <utils/KeyedVector.h>
 
 #include "include/OMX.h"
-
-#ifdef STE_HARDWARE
-#include "include/OMX_Video.h"
-#include "include/OMX_Index.h"
-#endif
 
 namespace android {
 
@@ -77,6 +77,10 @@ struct MuxOMX : public IOMX {
     virtual status_t prepareForAdaptivePlayback(
             node_id node, OMX_U32 port_index, OMX_BOOL enable,
             OMX_U32 maxFrameWidth, OMX_U32 maxFrameHeight);
+
+    virtual status_t configureVideoTunnelMode(
+            node_id node, OMX_U32 portIndex, OMX_BOOL tunneled,
+            OMX_U32 audioHwSync, native_handle_t **sidebandHandle);
 
     virtual status_t enableGraphicBuffers(
             node_id node, OMX_U32 port_index, OMX_BOOL enable);
@@ -146,7 +150,7 @@ private:
     const sp<IOMX> &getOMX(node_id node) const;
     const sp<IOMX> &getOMX_l(node_id node) const;
 
-    static bool IsSoftwareComponent(const char *name);
+    static bool CanLiveLocally(const char *name);
 
     DISALLOW_EVIL_CONSTRUCTORS(MuxOMX);
 };
@@ -169,8 +173,15 @@ bool MuxOMX::isLocalNode_l(node_id node) const {
 }
 
 // static
-bool MuxOMX::IsSoftwareComponent(const char *name) {
+
+bool MuxOMX::CanLiveLocally(const char *name) {
+#ifdef __LP64__
+    (void)name; // disable unused parameter warning
+    // 64 bit processes always run OMX remote on MediaServer
+    return false;
+#else
     return !strncasecmp(name, "OMX.google.", 11) || !strncasecmp(name, "OMX.ffmpeg.", 11);
+#endif
 }
 
 const sp<IOMX> &MuxOMX::getOMX(node_id node) const {
@@ -202,7 +213,7 @@ status_t MuxOMX::allocateNode(
 
     sp<IOMX> omx;
 
-    if (IsSoftwareComponent(name)) {
+    if (CanLiveLocally(name)) {
         if (mLocalOMX == NULL) {
             mLocalOMX = new OMX;
         }
@@ -246,22 +257,6 @@ status_t MuxOMX::sendCommand(
 status_t MuxOMX::getParameter(
         node_id node, OMX_INDEXTYPE index,
         void *params, size_t size) {
-#ifdef STE_HARDWARE
-	/* Meticulus:
-	 * If we call into our STE omx blobs with an unsupported profile index
-	 * The blob freaks out and dies causing errors later. If we stop the call
-	 * and just return an error here, VFM doesn't freak out and the caller
-	 * can try a working profile. i.e. YouTube v5.10.1.5 (9/19/2014) and up.
-	 */
-	if(index == OMX_IndexParamVideoProfileLevelQuerySupported){
-		OMX_VIDEO_PARAM_PROFILELEVELTYPE *pt = (OMX_VIDEO_PARAM_PROFILELEVELTYPE *)params;
-		ALOGI("Meticulus: eProfile=%lu eLevel=%lu nProfileIndex=%lu\n",pt->eProfile, pt->eLevel, pt->nProfileIndex);
-		if(pt->nProfileIndex >= 3 || pt->nProfileIndex == 0){
-			return -1;
-		}
-		
-	}
-#endif
     return getOMX(node)->getParameter(node, index, params, size);
 }
 
@@ -298,6 +293,13 @@ status_t MuxOMX::prepareForAdaptivePlayback(
         OMX_U32 maxFrameWidth, OMX_U32 maxFrameHeight) {
     return getOMX(node)->prepareForAdaptivePlayback(
             node, port_index, enable, maxFrameWidth, maxFrameHeight);
+}
+
+status_t MuxOMX::configureVideoTunnelMode(
+        node_id node, OMX_U32 portIndex, OMX_BOOL enable,
+        OMX_U32 audioHwSync, native_handle_t **sidebandHandle) {
+    return getOMX(node)->configureVideoTunnelMode(
+            node, portIndex, enable, audioHwSync, sidebandHandle);
 }
 
 status_t MuxOMX::enableGraphicBuffers(
@@ -403,7 +405,7 @@ status_t OMXClient::connect() {
     mOMX = service->getOMX();
     CHECK(mOMX.get() != NULL);
 
-    if (!mOMX->livesLocally(NULL /* node */, getpid())) {
+    if (!mOMX->livesLocally(0 /* node */, getpid())) {
         ALOGI("Using client-side OMX mux.");
         mOMX = new MuxOMX(mOMX);
     }

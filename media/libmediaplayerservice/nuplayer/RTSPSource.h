@@ -22,8 +22,6 @@
 
 #include "ATSParser.h"
 
-#include <media/stagefright/foundation/AHandlerReflector.h>
-
 namespace android {
 
 struct ALooper;
@@ -34,6 +32,7 @@ struct SDPLoader;
 struct NuPlayer::RTSPSource : public NuPlayer::Source {
     RTSPSource(
             const sp<AMessage> &notify,
+            const sp<IMediaHTTPService> &httpService,
             const char *url,
             const KeyedVector<String8, String8> *headers,
             bool uidValid = false,
@@ -53,11 +52,9 @@ struct NuPlayer::RTSPSource : public NuPlayer::Source {
     virtual status_t getDuration(int64_t *durationUs);
     virtual status_t seekTo(int64_t seekTimeUs);
 
-    virtual int32_t getServerTimeoutMs();
+    virtual int64_t getServerTimeoutUs();
 
     void onMessageReceived(const sp<AMessage> &msg);
-
-    virtual bool setCbfForSeekDone(const sp<AMessage> &notify);
 
 protected:
     virtual ~RTSPSource();
@@ -81,7 +78,6 @@ private:
     enum Flags {
         // Don't log any URLs.
         kFlagIncognito = 1,
-        kFlagUseTCP = 2,
     };
 
     struct TrackInfo {
@@ -93,6 +89,7 @@ private:
         bool mNPTMappingValid;
     };
 
+    sp<IMediaHTTPService> mHTTPService;
     AString mURL;
     KeyedVector<String8, String8> mExtraHeaders;
     bool mUIDValid;
@@ -103,11 +100,8 @@ private:
     status_t mFinalResult;
     uint32_t mDisconnectReplyID;
     bool mBuffering;
-    bool mIsH263;
-    uint32_t mNumKeepDamagedAccessUnits;
 
     sp<ALooper> mLooper;
-    sp<AHandlerReflector<RTSPSource> > mReflector;
     sp<MyHandler> mHandler;
     sp<SDPLoader> mSDPLoader;
 
@@ -121,8 +115,6 @@ private:
 
     int64_t mEOSTimeoutAudio;
     int64_t mEOSTimeoutVideo;
-
-    sp<AMessage> mSeekDoneNotify;
 
     sp<AnotherPacketSource> getSource(bool audio);
 

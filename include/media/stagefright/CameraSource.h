@@ -27,6 +27,14 @@
 #include <utils/RefBase.h>
 #include <utils/String16.h>
 
+#include <media/stagefright/ExtendedStats.h>
+#define RECORDER_STATS(func, ...) \
+    do { \
+        if(mRecorderExtendedStats != NULL) { \
+            mRecorderExtendedStats->func(__VA_ARGS__);} \
+    } \
+    while(0)
+
 namespace android {
 
 class IMemory;
@@ -163,10 +171,12 @@ protected:
     int64_t mLastFrameTimestampUs;
     bool mStarted;
     int32_t mNumFramesEncoded;
+
     bool mRecPause;
     int64_t  mPauseAdjTimeUs;
     int64_t  mPauseStartTimeUs;
     int64_t  mPauseEndTimeUs;
+
     // Time between capture of two frames.
     int64_t mTimeBetweenFrameCaptureUs;
 
@@ -176,7 +186,7 @@ protected:
                  const sp<IGraphicBufferProducer>& surface,
                  bool storeMetaDataInVideoBuffers);
 
-    virtual void startCameraRecording();
+    virtual status_t startCameraRecording();
     virtual void releaseRecordingFrame(const sp<IMemory>& frame);
 
     // Returns true if need to skip the current frame.
@@ -189,6 +199,8 @@ protected:
     virtual void dataCallbackTimestamp(int64_t timestampUs, int32_t msgType,
             const sp<IMemory> &data);
 
+    void releaseCamera();
+
 private:
     friend class CameraSourceListener;
 
@@ -198,6 +210,7 @@ private:
     List<sp<IMemory> > mFramesReceived;
     List<sp<IMemory> > mFramesBeingEncoded;
     List<int64_t> mFrameTimes;
+    sp<RecorderExtendedStats> mRecorderExtendedStats;
 
     int64_t mFirstFrameTimeUs;
     int32_t mNumFramesDropped;
@@ -237,7 +250,6 @@ private:
                     int32_t frameRate);
 
     void stopCameraRecording();
-    void releaseCamera();
     status_t reset();
 
     CameraSource(const CameraSource &);

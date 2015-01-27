@@ -61,7 +61,9 @@ NuMediaExtractor::~NuMediaExtractor() {
 }
 
 status_t NuMediaExtractor::setDataSource(
-        const char *path, const KeyedVector<String8, String8> *headers) {
+        const sp<IMediaHTTPService> &httpService,
+        const char *path,
+        const KeyedVector<String8, String8> *headers) {
     Mutex::Autolock autoLock(mLock);
 
     if (mImpl != NULL) {
@@ -69,7 +71,7 @@ status_t NuMediaExtractor::setDataSource(
     }
 
     sp<DataSource> dataSource =
-        DataSource::CreateFromURI(path, headers);
+        DataSource::CreateFromURI(httpService, path, headers);
 
     if (dataSource == NULL) {
         return -ENOENT;
@@ -284,16 +286,18 @@ status_t NuMediaExtractor::selectTrack(size_t index) {
 
     const char *mime;
     CHECK(source->getFormat()->findCString(kKeyMIMEType, &mime));
-    if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_FLAC)) {
 #ifdef QTI_FLAC_DECODER
+    if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_FLAC)) {
         sp<MediaSource> mFlacSource = new FLACDecoder(source);
         info->mSource = mFlacSource;
         mFlacSource->start();
-#endif
-    } else {
+    }
+#else
+    {
         CHECK_EQ((status_t)OK, source->start());
         info->mSource = source;
     }
+#endif
 
     info->mTrackIndex = index;
     info->mFinalResult = OK;
@@ -395,7 +399,7 @@ ssize_t NuMediaExtractor::fetchTrackSamples(
                 info->mFinalResult = err;
 
                 if (info->mFinalResult != ERROR_END_OF_STREAM) {
-                    ALOGW("read on track %d failed with error %d",
+                    ALOGW("read on track %zu failed with error %d",
                           info->mTrackIndex, err);
                 }
 
