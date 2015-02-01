@@ -263,7 +263,7 @@ status_t MuxOMX::getParameter(
         node_id node, OMX_INDEXTYPE index,
         void *params, size_t size) {
 #ifdef STE_HARDWARE
-+    /* Meticulus:
+    /* Meticulus:
 +     * If we call into our STE omx blobs with an unsupported profile index
 +     * The blob freaks out and dies causing errors later. If we stop the call
 +     * and just return an error here, VFM doesn't freak out and the caller

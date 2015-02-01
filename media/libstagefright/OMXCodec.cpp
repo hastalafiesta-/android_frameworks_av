@@ -372,7 +372,7 @@ uint32_t OMXCodec::getComponentQuirks(
     if (info->hasQuirk("requires-store-metadata-before-idle")) {
         quirks |= kRequiresStoreMetaDataBeforeIdle;
     }
-+#endif
+#endif
     }
     if (info->hasQuirk("requies-loaded-to-idle-after-allocation")) {
         quirks |= kRequiresLoadedToIdleAfterAllocation;

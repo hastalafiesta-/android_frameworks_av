@@ -76,7 +76,6 @@ extern const char *MEDIA_MIMETYPE_VIDEO_DIVX4;
 extern const char *MEDIA_MIMETYPE_VIDEO_FLV1;
 extern const char *MEDIA_MIMETYPE_VIDEO_MJPEG;
 extern const char *MEDIA_MIMETYPE_VIDEO_RV;
-extern const char *MEDIA_MIMETYPE_VIDEO_VC1;
 extern const char *MEDIA_MIMETYPE_VIDEO_WMV;
 extern const char *MEDIA_MIMETYPE_VIDEO_HEVC;
 extern const char *MEDIA_MIMETYPE_VIDEO_FFMPEG;
